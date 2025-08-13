@@ -25,7 +25,7 @@ const manifest = {
     { key: 'tmdbKey', title: 'TMDB (optional, improves matching)', type: 'text' },
     { key: 'enableTitleSearch', title: 'Enable Title-Based Search (y:YYYY, t:movie|series flags)', type: 'boolean', default: false },
     { key: 'ttl', title: 'Cache TTL (seconds)', type: 'number', default: 21600 },
-    { key: 'max', title: 'Max Similar Results (1-12)', type: 'number', default: 8 }
+    { key: 'max', title: 'Max Similar Results (1-20)', type: 'number', default: 20 }
   ]
 };
 
@@ -59,12 +59,12 @@ function checkRateLimit(key) {
 
 function normalizeRuntimeConfig(extra = {}, cfg = {}) {
   const ttl = parseInt((extra.ttl || cfg.ttl || process.env.CACHE_TTL_SECONDS || '21600'), 10);
-  const maxRaw = parseInt((extra.max || cfg.max || '8'), 10) || 8;
+  const maxRaw = parseInt((extra.max || cfg.max || '20'), 10) || 20;
   if (cfg.tmdbKey && !process.env.TMDB_API_KEY) process.env.TMDB_API_KEY = cfg.tmdbKey;
   return {
     geminiKey: extra.geminiKey || cfg.geminiKey || process.env.GEMINI_API_KEY,
     ttl: isNaN(ttl) ? 21600 : ttl,
-    max: Math.min(12, Math.max(1, maxRaw)),
+    max: Math.min(20, Math.max(1, maxRaw)),
     enableTitleSearch: (extra.enableTitleSearch ?? cfg.enableTitleSearch) === true || (extra.enableTitleSearch === 'true')
   };
 }
@@ -87,7 +87,6 @@ async function computeSimilar(baseMeta, type, cfg){
   let raw;
   try { 
     raw = await getSimilarTitlesRaw(prompt, cfg.geminiKey); 
-    console.log('computeSimilar: Got raw response', raw?.length || 0, 'chars');
   }
   catch (e) { 
     console.error('computeSimilar: Gemini error', e.message);
@@ -143,12 +142,21 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
   if (!similarMetas) {
     try {
       const baseMeta = await fetchMeta(type, imdbId);
-      console.log('Catalog handler: baseMeta received', { name: baseMeta?.name, type: baseMeta?.type, hasData: !!baseMeta });
+      console.log('Catalog handler: baseMeta received', { 
+        name: baseMeta?.name, 
+        type: baseMeta?.type, 
+        hasData: !!baseMeta,
+        id: baseMeta?.id 
+      });
+      
       if (!baseMeta || !baseMeta.name) {
-        console.error('Catalog handler: Invalid meta for', imdbId, baseMeta);
+        console.error('Catalog handler: Invalid meta for', imdbId, 'Type:', type, 'Meta:', baseMeta);
         return { metas: [] };
       }
-      similarMetas = await computeSimilar(baseMeta, type, cfg);
+      
+      // Ensure baseMeta has the correct type
+      const metaWithType = { ...baseMeta, type: baseMeta.type || type };
+      similarMetas = await computeSimilar(metaWithType, type, cfg);
       cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
     } catch (e) {
       console.error('Catalog handler error', e); 
@@ -159,7 +167,8 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
   const metasWithReason = (similarMetas || []).map(m => ({
     ...m,
     type: m.type || type,
-    description: (m.description ? m.description + '\n' : '') + (m.reason ? 'Reason: ' + m.reason : '')
+    description: (m.description ? m.description + '\n\n' : '') + 
+                 (m.reason ? `AI Reason: ${m.reason}` : '')
   }));
   return { metas: metasWithReason };
 });

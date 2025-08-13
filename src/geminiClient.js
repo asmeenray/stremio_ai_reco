@@ -11,7 +11,7 @@ export async function getSimilarTitlesRaw(prompt, apiKey, { retries = 2, baseDel
       temperature: 0.4,
       topK: 20,
       topP: 0.8,
-      maxOutputTokens: 320,
+      maxOutputTokens: 1200, // Increased for 20 results
       responseMimeType: 'application/json'
     }
   };
@@ -24,7 +24,7 @@ export async function getSimilarTitlesRaw(prompt, apiKey, { retries = 2, baseDel
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(8000) // 8 second timeout
+        signal: AbortSignal.timeout(20000) // 20 second timeout for 20 results
       });
       if (!res.ok) {
         const status = res.status;
@@ -56,14 +56,20 @@ export async function getSimilarTitlesRaw(prompt, apiKey, { retries = 2, baseDel
 }
 
 export function buildPrompt(baseMeta) {
-  const { name, year, genres = [], description = '' } = baseMeta || {};
+  const { name, year, genres = [], description = '', director = [], cast = [] } = baseMeta || {};
   const genreText = genres.length ? genres.slice(0, 3).join(', ') : 'Unknown';
-  const plotText = description.slice(0, 300); // Shorter plot for faster processing
+  const plotText = description.slice(0, 250);
+  const directorText = Array.isArray(director) ? director.slice(0, 2).join(', ') : director || '';
+  const castText = Array.isArray(cast) ? cast.slice(0, 3).map(c => c.name || c).join(', ') : '';
   
   return `Find 20 similar ${baseMeta.type || 'titles'} to: ${name} (${year || '?'})\n` +
-    `Genres: ${genreText}\n${plotText ? `Plot: ${plotText}\n` : ''}` +
-    `Return JSON: {"similar":[{"title":"Name","year":2020,"reason":"Brief reason"}]}\n` +
-    `Focus on: same genre/tone, popular titles, no sequels unless seminal. Be concise.`;
+    `Genres: ${genreText}\n` +
+    `${directorText ? `Director: ${directorText}\n` : ''}` +
+    `${plotText ? `Plot: ${plotText}\n` : ''}` +
+    `${castText ? `Cast: ${castText}\n` : ''}` +
+    `JSON: {"similar":[{"title":"Movie Name","year":2020,"reason":"Brief reason"}]}\n` +
+    `Priority: 1) Same franchise/series movies FIRST 2) Same director/genre 3) Similar themes/tone 4) Popular acclaimed titles\n` +
+    `Keep reasons under 6 words. Include sequels, prequels, and franchise movies at the top.`;
 }
 
 export function parseSimilarJSON(text) {
@@ -75,6 +81,7 @@ export function parseSimilarJSON(text) {
     if (Array.isArray(obj.similar)) return obj.similar;
     return [];
   } catch (e) {
+    console.error('parseSimilarJSON: Parse error', e.message);
     return [];
   }
 }
