@@ -53,7 +53,16 @@ function normalizeRuntimeConfig(extra = {}, cfg = {}) {
 async function computeSimilar(baseMeta, type, cfg){
   if (!cfg.geminiKey) return [];
   const prompt = buildPrompt(baseMeta);
-  const raw = await getSimilarTitlesRaw(prompt, cfg.geminiKey);
+  let raw;
+  try {
+    raw = await getSimilarTitlesRaw(prompt, cfg.geminiKey);
+  } catch (e) {
+    if (/Gemini API error 5/.test(e.message)) {
+      // transient error, return empty list (will be negative cached by caller)
+      return [];
+    }
+    throw e;
+  }
   const parsed = parseSimilarJSON(raw).slice(0, cfg.max);
   return mapSimilarToMetas(parsed, type);
 }
@@ -66,7 +75,8 @@ builder.defineMetaHandler(async ({ type, id, extra, config }) => {
     let similarMetas = cache.get(key);
     if (!similarMetas && cfg.geminiKey) {
       similarMetas = await computeSimilar(baseMeta, type, cfg);
-      cache.set(key, similarMetas, cfg.ttl);
+      // negative cache: short TTL if empty
+      cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
     }
     // Add two links: deep link (may not show on all clients) and a web fallback
     const webLink = `/web/?type=${type}&imdbId=${id}`; // relative so Stremio loads it in webview
@@ -102,7 +112,7 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
       try {
         const baseMeta = await fetchMeta(type, imdbId);
         similarMetas = await computeSimilar(baseMeta, type, cfg);
-        cache.set(key, similarMetas, cfg.ttl);
+        cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
       } catch (e) {
         console.error('Static catalog handler error', e);
         similarMetas = [];
@@ -123,7 +133,7 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
       try {
         const baseMeta = await fetchMeta(type, originalId);
         similarMetas = await computeSimilar(baseMeta, type, cfg);
-        cache.set(key, similarMetas, cfg.ttl);
+        cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
       } catch (e) {
         console.error('Dynamic catalog handler error', e);
         similarMetas = [];
@@ -139,23 +149,18 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
   return { metas: [] };
 });
 
-// New stream handler for provider dropdown
-builder.defineStreamHandler(async ({ type, id, extra, config }) => {
-  const cfg = normalizeRuntimeConfig(extra, config);
-  // Do not prefetch; keep light. Provide one navigational stream.
+// Replace existing stream handler with inert navigation stream
+builder.defineStreamHandler(async ({ type, id }) => {
   let titleName = id;
-  try {
-    const meta = await fetchMeta(type, id);
-    titleName = meta?.name || id;
-  } catch {}
-  // Deep link to Discover view for current type; user can switch type there.
-  const discoverLink = `stremio://discover/${type}/ai-similar/imdbId=${id}`;
-  return { streams: [ {
+  try { const meta = await fetchMeta(type, id); titleName = meta?.name || id; } catch {}
+  const catalogUrl = `/catalog/${type}/ai-similar.json?imdbId=${id}`;
+  return { streams: [{
     name: 'AI Similar',
-    title: 'AI Similar Recommendations',
-    description: `Open AI Similar catalog for ${titleName}`,
-    externalUrl: discoverLink
-  } ] };
+    title: `AI Similar for ${titleName}`,
+    description: 'Opens the AI Similar catalog (Discover view).',
+    url: catalogUrl,
+    behaviorHints: { notWebReady: true }
+  }] };
 });
 
 const addonInterface = builder.getInterface();

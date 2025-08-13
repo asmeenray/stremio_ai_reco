@@ -3,15 +3,10 @@ import { fetch } from 'undici';
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MODEL = 'gemini-1.5-flash';
 
-export async function getSimilarTitlesRaw(prompt, apiKey) {
+export async function getSimilarTitlesRaw(prompt, apiKey, { retries = 3, baseDelay = 500 } = {}) {
   const url = `${GEMINI_API_URL}/${MODEL}:generateContent?key=${apiKey}`;
   const body = {
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: prompt }]
-      }
-    ],
+    contents: [ { role: 'user', parts: [{ text: prompt }] } ],
     generationConfig: {
       temperature: 0.7,
       topK: 40,
@@ -21,16 +16,38 @@ export async function getSimilarTitlesRaw(prompt, apiKey) {
     }
   };
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) throw new Error(`Gemini API error ${res.status}`);
-  const data = await res.json();
-  // Gemini sometimes nests JSON in text field
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-  return text;
+  let attempt = 0;
+  while (true) {
+    attempt++;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        const status = res.status;
+        // Retry on 5xx
+        if (status >= 500 && status < 600 && attempt <= retries) {
+          const delay = baseDelay * 2 ** (attempt - 1) + Math.round(Math.random() * 100);
+            await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw new Error(`Gemini API error ${status}`);
+      }
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      return text;
+    } catch (err) {
+      // Network-level retry
+      if (attempt <= retries && /ECONNRESET|ETIMEDOUT|fetch failed/i.test(err.message)) {
+        const delay = baseDelay * 2 ** (attempt - 1) + Math.round(Math.random() * 100);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 export function buildPrompt(baseMeta) {
