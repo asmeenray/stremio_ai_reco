@@ -7,7 +7,7 @@ import { cache, cacheKey } from './cache.js';
 
 const manifest = {
   id: 'community.stremio.ai-similar',
-  version: '0.2.0',
+  version: '0.2.1',
   name: 'AI Similar Titles',
   description: 'Gemini AI generated similar movies/series',
   logo: 'https://stremio-logo.s3.eu-central-1.amazonaws.com/stremio-icon.png',
@@ -17,11 +17,7 @@ const manifest = {
     { type: 'movie', id: 'ai-similar', name: 'AI Similar (Gemini)', extra: [{ name: 'search', isRequired: true }, { name: 'max' }] },
     { type: 'series', id: 'ai-similar', name: 'AI Similar (Gemini)', extra: [{ name: 'search', isRequired: true }, { name: 'max' }] }
   ],
-  resources: [
-    { name: 'catalog', types: ['movie', 'series'], idPrefixes: ['ai-similar'] },
-    'stream',
-    'meta'
-  ],
+  resources: [ 'catalog', 'stream', 'meta' ],
   idPrefixes: ['tt'],
   behaviorHints: { configurable: true, configurationRequired: true },
   config: [
@@ -57,32 +53,16 @@ async function computeSimilar(baseMeta, type, cfg){
   return mapSimilarToMetas(parsed, type);
 }
 
-// Meta handler kept simple – no longer injects links (search deep-link replaces it)
+// Meta handler simple
 builder.defineMetaHandler(async ({ type, id }) => {
-  try {
-    const baseMeta = await fetchMeta(type, id);
-    return { meta: baseMeta };
-  } catch (e) {
-    console.error('Meta handler error', e);
-    return { meta: { id, type, name: 'Unknown', description: 'Error fetching metadata' } };
-  }
+  try { const baseMeta = await fetchMeta(type, id); return { meta: baseMeta }; }
+  catch (e) { console.error('Meta handler error', e); return { meta: { id, type, name: 'Unknown', description: 'Error fetching metadata' } }; }
 });
 
-// Catalog handler matches Stremio search extra=search; accepts IMDb id or plain title
 function parseSearchKey(raw) {
-  let searchKey = raw;
-  let searchYear = null;
-  let searchType = null;
-  const yearMatch = searchKey.match(/\by:(\d{4})\b/i);
-  if (yearMatch) {
-    searchYear = yearMatch[1];
-    searchKey = searchKey.replace(/\by:\d{4}\b/i, '').trim();
-  }
-  const typeMatch = searchKey.match(/\bt:(movie|series)\b/i);
-  if (typeMatch) {
-    searchType = typeMatch[1].toLowerCase();
-    searchKey = searchKey.replace(/\bt:(movie|series)\b/i, '').trim();
-  }
+  let searchKey = raw; let searchYear = null; let searchType = null;
+  const yearMatch = searchKey.match(/\by:(\d{4})\b/i); if (yearMatch) { searchYear = yearMatch[1]; searchKey = searchKey.replace(/\by:\d{4}\b/i, '').trim(); }
+  const typeMatch = searchKey.match(/\bt:(movie|series)\b/i); if (typeMatch) { searchType = typeMatch[1].toLowerCase(); searchKey = searchKey.replace(/\bt:(movie|series)\b/i, '').trim(); }
   return { searchKey, searchYear, searchType };
 }
 
@@ -92,43 +72,52 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
   const rawSearch = (extra?.search || '').trim();
   if (!rawSearch) return { metas: [] };
 
-  let imdbId = null;
-  let parsed = { searchKey: rawSearch, searchYear: null, searchType: null };
-
-  if (rawSearch.startsWith('tt')) {
-    imdbId = rawSearch.split(':')[0];
-  } else {
-    if (!cfg.enableTitleSearch) return { metas: [] }; // title search disabled
+  let imdbId = null; let parsed = { searchKey: rawSearch, searchYear: null, searchType: null };
+  if (rawSearch.startsWith('tt')) { imdbId = rawSearch.split(':')[0]; }
+  else {
+    if (!cfg.enableTitleSearch) return { metas: [] };
     parsed = parseSearchKey(rawSearch);
-    if (parsed.searchType && parsed.searchType !== type) return { metas: [] }; // type flag mismatch
+    if (parsed.searchType && parsed.searchType !== type) return { metas: [] };
     try {
       const results = await searchTitle(parsed.searchKey, type);
       if (results && results.length) {
         if (parsed.searchYear) {
           const yr = parseInt(parsed.searchYear, 10);
           const byYear = results.find(r => parseInt(r.year, 10) === yr);
-            imdbId = (byYear || results[0]).id;
-        } else {
-          imdbId = results[0].id;
-        }
+          imdbId = (byYear || results[0]).id;
+        } else imdbId = results[0].id;
       }
     } catch {}
   }
-
   if (!imdbId) return { metas: [] };
 
   const key = cacheKey(type, imdbId) + `:${cfg.max}`;
   let similarMetas = cache.get(key);
   if (!similarMetas) {
+    // Time budget to avoid long blocking (so the row appears quickly)
     try {
       const baseMeta = await fetchMeta(type, imdbId);
-      similarMetas = await computeSimilar(baseMeta, type, cfg);
-      cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
+      const TIME_BUDGET_MS = 1500;
+      const computePromise = computeSimilar(baseMeta, type, cfg);
+      const raced = await Promise.race([
+        computePromise,
+        new Promise(res => setTimeout(() => res('__TIMEOUT__'), TIME_BUDGET_MS))
+      ]);
+      if (raced === '__TIMEOUT__') {
+        // Background fill
+        computePromise.then(res => {
+          cache.set(key, res, res.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
+        }).catch(()=>{});
+        return { metas: [ { id: 'ai:loading', type, name: 'Generating AI Similar…', poster: manifest.logo, description: 'Please wait a moment and re-open. (Background generation in progress)' } ] };
+      } else {
+        similarMetas = raced;
+        cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
+      }
     } catch (e) {
-      console.error('Catalog handler error', e);
-      similarMetas = [];
+      console.error('Catalog handler error', e); similarMetas = [];
     }
   }
+  if (!similarMetas) return { metas: [] };
   const metasWithReason = (similarMetas || []).map(m => ({
     ...m,
     type: m.type || type,
@@ -137,13 +126,11 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
   return { metas: metasWithReason };
 });
 
-// Stream handler: deep link to search page so Stremio triggers catalogs with search param
+// Stream handler deep-link to search
 builder.defineStreamHandler(async ({ type, id }) => {
-  // Normalize IMDb id (strip anything after first colon)
   const imdbId = id.split(':')[0];
-  const appUrl = `stremio:///search?search=${imdbId}`; // app deep link
+  const appUrl = `stremio:///search?search=${imdbId}`;
   const webUrl = `https://web.stremio.com/#/search?search=${imdbId}`;
-  // Provide both variants; client may choose first
   return { streams: [
     { name: 'AI Similar', title: 'AI Similar (App Search)', externalUrl: appUrl, behaviorHints: { notWebReady: true } },
     { name: 'AI Similar', title: 'AI Similar (Web Search)', externalUrl: webUrl, behaviorHints: { notWebReady: true } }
