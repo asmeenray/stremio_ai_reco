@@ -31,6 +31,32 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
+// Rate limiting to prevent 429 errors
+const rateLimiter = new Map();
+const RATE_LIMIT_WINDOW = 60000; // 1 minute
+const MAX_REQUESTS_PER_WINDOW = 10;
+
+function checkRateLimit(key) {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW;
+  
+  if (!rateLimiter.has(key)) {
+    rateLimiter.set(key, []);
+  }
+  
+  const requests = rateLimiter.get(key);
+  // Remove old requests outside the window
+  const validRequests = requests.filter(time => time > windowStart);
+  rateLimiter.set(key, validRequests);
+  
+  if (validRequests.length >= MAX_REQUESTS_PER_WINDOW) {
+    return false; // Rate limited
+  }
+  
+  validRequests.push(now);
+  return true; // Allow request
+}
+
 function normalizeRuntimeConfig(extra = {}, cfg = {}) {
   const ttl = parseInt((extra.ttl || cfg.ttl || process.env.CACHE_TTL_SECONDS || '21600'), 10);
   const maxRaw = parseInt((extra.max || cfg.max || '8'), 10) || 8;
@@ -48,6 +74,14 @@ async function computeSimilar(baseMeta, type, cfg){
     console.log('computeSimilar: Missing geminiKey or baseMeta', { hasKey: !!cfg.geminiKey, hasMeta: !!baseMeta });
     return [];
   }
+  
+  // Rate limit check
+  const rateKey = `gemini:${cfg.geminiKey.slice(-4)}`;
+  if (!checkRateLimit(rateKey)) {
+    console.log('computeSimilar: Rate limited, returning empty');
+    return [];
+  }
+  
   console.log('computeSimilar: Starting for', baseMeta.name, type);
   const prompt = buildPrompt(baseMeta);
   let raw;
@@ -109,8 +143,9 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
   if (!similarMetas) {
     try {
       const baseMeta = await fetchMeta(type, imdbId);
-      if (!baseMeta) {
-        console.error('Catalog handler: No meta found for', imdbId);
+      console.log('Catalog handler: baseMeta received', { name: baseMeta?.name, type: baseMeta?.type, hasData: !!baseMeta });
+      if (!baseMeta || !baseMeta.name) {
+        console.error('Catalog handler: Invalid meta for', imdbId, baseMeta);
         return { metas: [] };
       }
       similarMetas = await computeSimilar(baseMeta, type, cfg);
