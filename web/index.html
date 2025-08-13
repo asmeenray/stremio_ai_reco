@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>AI Similar Stremio Add-on Config</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="stylesheet" href="/web/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="logo-circle">AI</div>
+      <h1>AI Similar Add-on</h1>
+      <p class="subtitle">Generate similar movies & series using Gemini</p>
+
+      <form id="configForm">
+        <label>Gemini API Key <span class="req">*</span>
+          <input type="password" id="geminiKey" placeholder="AIza..." required />
+        </label>
+        <details class="adv">
+          <summary>Advanced Options</summary>
+          <label>Cache TTL (seconds)
+            <input type="number" id="ttl" min="60" value="21600" />
+          </label>
+          <label>Max Results (1-12)
+            <input type="number" id="maxResults" min="1" max="12" value="8" />
+          </label>
+        </details>
+        <button type="submit" class="primary">Generate Installation URL</button>
+      </form>
+
+      <div id="result" class="hidden">
+        <h2>Installation</h2>
+        <p>Copy this URL and add it in Stremio (Add-ons -> Community -> Install via URL):</p>
+        <div class="url-box"><input id="installUrl" readonly /> <button id="copyBtn">Copy</button></div>
+        <p><a id="openManifest" target="_blank" rel="noopener">Open manifest.json</a></p>
+        <p class="note">Your API key is never stored on this server; it's only embedded in the manifest URL you run locally.</p>
+      </div>
+
+      <footer>
+        <a href="https://ai.google.dev/" target="_blank" rel="noopener">Get a Gemini API Key</a>
+      </footer>
+    </div>
+  </div>
+<script type="module" src="/web/main.js"></script>
+</body>
+</html>
