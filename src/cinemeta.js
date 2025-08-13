@@ -5,9 +5,14 @@ const CINEMETA = 'https://v3-cinemeta.strem.io';
 
 export async function fetchMeta(type, id) {
   const url = `${CINEMETA}/meta/${type}/${id}.json`;
+  console.log('fetchMeta: Requesting', url);
   const res = await fetch(url);
-  if (!res.ok) throw new Error('Cinemeta meta not found');
+  if (!res.ok) {
+    console.error('fetchMeta: Failed', res.status, url);
+    throw new Error('Cinemeta meta not found');
+  }
   const data = await res.json();
+  console.log('fetchMeta: Success for', data.meta?.name || id);
   return data.meta;
 }
 

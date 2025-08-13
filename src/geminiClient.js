@@ -27,11 +27,15 @@ export async function getSimilarTitlesRaw(prompt, apiKey, { retries = 3, baseDel
       });
       if (!res.ok) {
         const status = res.status;
-        // Retry on 5xx
-        if (status >= 500 && status < 600 && attempt <= retries) {
-          const delay = baseDelay * 2 ** (attempt - 1) + Math.round(Math.random() * 100);
+        // Retry on 5xx and 429 (rate limit)
+        if ((status >= 500 && status < 600) || status === 429) {
+          if (attempt <= retries) {
+            // Longer delay for 429 rate limit
+            const multiplier = status === 429 ? 4 : 2;
+            const delay = baseDelay * multiplier ** (attempt - 1) + Math.round(Math.random() * 100);
             await new Promise(r => setTimeout(r, delay));
-          continue;
+            continue;
+          }
         }
         throw new Error(`Gemini API error ${status}`);
       }

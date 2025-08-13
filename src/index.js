@@ -57,7 +57,7 @@ async function computeSimilar(baseMeta, type, cfg){
   }
   catch (e) { 
     console.error('computeSimilar: Gemini error', e.message);
-    if (/Gemini API error 5/.test(e.message)) return []; 
+    if (/Gemini API error (5|429)/.test(e.message)) return []; 
     throw e; 
   }
   const parsed = parseSimilarJSON(raw).slice(0, cfg.max);
@@ -109,6 +109,10 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
   if (!similarMetas) {
     try {
       const baseMeta = await fetchMeta(type, imdbId);
+      if (!baseMeta) {
+        console.error('Catalog handler: No meta found for', imdbId);
+        return { metas: [] };
+      }
       similarMetas = await computeSimilar(baseMeta, type, cfg);
       cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
     } catch (e) {
