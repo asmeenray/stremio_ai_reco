@@ -1,37 +1,33 @@
 import 'dotenv/config';
 import sdk from 'stremio-addon-sdk';
 const { addonBuilder, serveHTTP } = sdk;
-import { fetchMeta, mapSimilarToMetas } from './cinemeta.js';
+import { fetchMeta, mapSimilarToMetas, searchTitle } from './cinemeta.js';
 import { buildPrompt, getSimilarTitlesRaw, parseSimilarJSON } from './geminiClient.js';
 import { cache, cacheKey } from './cache.js';
 
 const manifest = {
   id: 'community.stremio.ai-similar',
-  version: '0.1.0',
+  version: '0.2.0',
   name: 'AI Similar Titles',
   description: 'Gemini AI generated similar movies/series',
   logo: 'https://stremio-logo.s3.eu-central-1.amazonaws.com/stremio-icon.png',
   background: 'https://stremio-logo.s3.eu-central-1.amazonaws.com/hero-bg.png',
   types: ['movie', 'series'],
   catalogs: [
-    // imdbId now optional; placeholder shown if missing
-    { type: 'movie', id: 'ai-similar', name: 'AI Similar', extra: [{ name: 'imdbId' }, { name: 'max' }] },
-    { type: 'series', id: 'ai-similar', name: 'AI Similar', extra: [{ name: 'imdbId' }, { name: 'max' }] }
+    { type: 'movie', id: 'ai-similar', name: 'AI Similar (Gemini)', extra: [{ name: 'search', isRequired: true }, { name: 'max' }] },
+    { type: 'series', id: 'ai-similar', name: 'AI Similar (Gemini)', extra: [{ name: 'search', isRequired: true }, { name: 'max' }] }
   ],
   resources: [
-    'meta',
+    { name: 'catalog', types: ['movie', 'series'], idPrefixes: ['ai-similar'] },
     'stream',
-    {
-      name: 'catalog',
-      types: ['movie', 'series'],
-      idPrefixes: ['similar', 'ai-similar']
-    }
+    'meta'
   ],
   idPrefixes: ['tt'],
   behaviorHints: { configurable: true, configurationRequired: true },
   config: [
     { key: 'geminiKey', title: 'Gemini API Key', type: 'text', required: true },
     { key: 'tmdbKey', title: 'TMDB (optional, improves matching)', type: 'text' },
+    { key: 'enableTitleSearch', title: 'Enable Title-Based Search (y:YYYY, t:movie|series flags)', type: 'boolean', default: false },
     { key: 'ttl', title: 'Cache TTL (seconds)', type: 'number', default: 21600 },
     { key: 'max', title: 'Max Similar Results (1-12)', type: 'number', default: 8 }
   ]
@@ -46,124 +42,115 @@ function normalizeRuntimeConfig(extra = {}, cfg = {}) {
   return {
     geminiKey: extra.geminiKey || cfg.geminiKey || process.env.GEMINI_API_KEY,
     ttl: isNaN(ttl) ? 21600 : ttl,
-    max: Math.min(12, Math.max(1, maxRaw))
+    max: Math.min(12, Math.max(1, maxRaw)),
+    enableTitleSearch: (extra.enableTitleSearch ?? cfg.enableTitleSearch) === true || (extra.enableTitleSearch === 'true')
   };
 }
 
 async function computeSimilar(baseMeta, type, cfg){
-  if (!cfg.geminiKey) return [];
+  if (!cfg.geminiKey || !baseMeta) return [];
   const prompt = buildPrompt(baseMeta);
   let raw;
-  try {
-    raw = await getSimilarTitlesRaw(prompt, cfg.geminiKey);
-  } catch (e) {
-    if (/Gemini API error 5/.test(e.message)) {
-      // transient error, return empty list (will be negative cached by caller)
-      return [];
-    }
-    throw e;
-  }
+  try { raw = await getSimilarTitlesRaw(prompt, cfg.geminiKey); }
+  catch (e) { if (/Gemini API error 5/.test(e.message)) return []; throw e; }
   const parsed = parseSimilarJSON(raw).slice(0, cfg.max);
   return mapSimilarToMetas(parsed, type);
 }
 
-builder.defineMetaHandler(async ({ type, id, extra, config }) => {
-  const cfg = normalizeRuntimeConfig(extra, config);
+// Meta handler kept simple – no longer injects links (search deep-link replaces it)
+builder.defineMetaHandler(async ({ type, id }) => {
   try {
     const baseMeta = await fetchMeta(type, id);
-    const key = cacheKey(type, id) + `:${cfg.max}`;
-    let similarMetas = cache.get(key);
-    if (!similarMetas && cfg.geminiKey) {
-      similarMetas = await computeSimilar(baseMeta, type, cfg);
-      // negative cache: short TTL if empty
-      cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
-    }
-    // Add two links: deep link (may not show on all clients) and a web fallback
-    const webLink = `/web/?type=${type}&imdbId=${id}`; // relative so Stremio loads it in webview
-    const links = [
-      { name: 'AI Similar (Discover)', category: 'recommendation', url: `stremio://discover/${type}/ai-similar/imdbId=${id}` },
-      { name: 'AI Similar (Web)', category: 'recommendation', url: webLink }
-    ];
-    return { meta: { ...baseMeta, aiSimilar: similarMetas || [], links } };
+    return { meta: baseMeta };
   } catch (e) {
     console.error('Meta handler error', e);
-    return { meta: { id, type, name: 'Unknown', aiSimilar: [], error: e.message } };
+    return { meta: { id, type, name: 'Unknown', description: 'Error fetching metadata' } };
   }
 });
+
+// Catalog handler matches Stremio search extra=search; accepts IMDb id or plain title
+function parseSearchKey(raw) {
+  let searchKey = raw;
+  let searchYear = null;
+  let searchType = null;
+  const yearMatch = searchKey.match(/\by:(\d{4})\b/i);
+  if (yearMatch) {
+    searchYear = yearMatch[1];
+    searchKey = searchKey.replace(/\by:\d{4}\b/i, '').trim();
+  }
+  const typeMatch = searchKey.match(/\bt:(movie|series)\b/i);
+  if (typeMatch) {
+    searchType = typeMatch[1].toLowerCase();
+    searchKey = searchKey.replace(/\bt:(movie|series)\b/i, '').trim();
+  }
+  return { searchKey, searchYear, searchType };
+}
 
 builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
+  if (id !== 'ai-similar') return { metas: [] };
   const cfg = normalizeRuntimeConfig(extra, config);
-  if (id === 'ai-similar') {
-    const imdbId = extra?.imdbId;
-    if (!imdbId) {
-      // Instructional placeholder meta
-      return { metas: [ {
-        id: 'ai:instructions',
-        type,
-        name: 'Enter an IMDb ID (tt...)',
-        description: 'Usage: In the search/extra box type imdbId=tt1234567 OR open a title and choose AI Similar provider to deep-link here.',
-        poster: manifest.logo,
-        background: manifest.background
-      } ] };
-    }
-    const key = cacheKey(type, imdbId) + `:${cfg.max}`;
-    let similarMetas = cache.get(key);
-    if (!similarMetas && cfg.geminiKey) {
-      try {
-        const baseMeta = await fetchMeta(type, imdbId);
-        similarMetas = await computeSimilar(baseMeta, type, cfg);
-        cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
-      } catch (e) {
-        console.error('Static catalog handler error', e);
-        similarMetas = [];
+  const rawSearch = (extra?.search || '').trim();
+  if (!rawSearch) return { metas: [] };
+
+  let imdbId = null;
+  let parsed = { searchKey: rawSearch, searchYear: null, searchType: null };
+
+  if (rawSearch.startsWith('tt')) {
+    imdbId = rawSearch.split(':')[0];
+  } else {
+    if (!cfg.enableTitleSearch) return { metas: [] }; // title search disabled
+    parsed = parseSearchKey(rawSearch);
+    if (parsed.searchType && parsed.searchType !== type) return { metas: [] }; // type flag mismatch
+    try {
+      const results = await searchTitle(parsed.searchKey, type);
+      if (results && results.length) {
+        if (parsed.searchYear) {
+          const yr = parseInt(parsed.searchYear, 10);
+          const byYear = results.find(r => parseInt(r.year, 10) === yr);
+            imdbId = (byYear || results[0]).id;
+        } else {
+          imdbId = results[0].id;
+        }
       }
-    }
-    const metasWithReason = (similarMetas || []).map(m => ({
-      ...m,
-      type: m.type || type,
-      description: (m.description ? m.description + '\n' : '') + (m.reason ? 'Reason: ' + m.reason : '')
-    }));
-    return { metas: metasWithReason };
+    } catch {}
   }
-  if (id.startsWith('similar:')) {
-    const originalId = id.split(':')[1];
-    const key = cacheKey(type, originalId) + `:${cfg.max}`;
-    let similarMetas = cache.get(key);
-    if (!similarMetas && cfg.geminiKey) {
-      try {
-        const baseMeta = await fetchMeta(type, originalId);
-        similarMetas = await computeSimilar(baseMeta, type, cfg);
-        cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
-      } catch (e) {
-        console.error('Dynamic catalog handler error', e);
-        similarMetas = [];
-      }
+
+  if (!imdbId) return { metas: [] };
+
+  const key = cacheKey(type, imdbId) + `:${cfg.max}`;
+  let similarMetas = cache.get(key);
+  if (!similarMetas) {
+    try {
+      const baseMeta = await fetchMeta(type, imdbId);
+      similarMetas = await computeSimilar(baseMeta, type, cfg);
+      cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
+    } catch (e) {
+      console.error('Catalog handler error', e);
+      similarMetas = [];
     }
-    const metasWithReason = (similarMetas || []).map(m => ({
-      ...m,
-      type: m.type || type,
-      description: (m.description ? m.description + '\n' : '') + (m.reason ? 'Reason: ' + m.reason : '')
-    }));
-    return { metas: metasWithReason };
   }
-  return { metas: [] };
+  const metasWithReason = (similarMetas || []).map(m => ({
+    ...m,
+    type: m.type || type,
+    description: (m.description ? m.description + '\n' : '') + (m.reason ? 'Reason: ' + m.reason : '')
+  }));
+  return { metas: metasWithReason };
 });
 
-// Replace existing stream handler with redirect helper page so it does not try to play media
+// Stream handler: deep link to search page so Stremio triggers catalogs with search param
 builder.defineStreamHandler(async ({ type, id }) => {
-  let titleName = id;
-  try { const meta = await fetchMeta(type, id); titleName = meta?.name || id; } catch {}
-  const redirectUrl = `/web/redirect.html?type=${type}&id=${id}`;
-  return { streams: [{
-    name: 'AI Similar',
-    title: `AI Similar for ${titleName}`,
-    description: 'Show AI Similar recommendations (opens Discover).',
-    url: redirectUrl,
-    behaviorHints: { notWebReady: false }
-  }] };
+  // Normalize IMDb id (strip anything after first colon)
+  const imdbId = id.split(':')[0];
+  const appUrl = `stremio:///search?search=${imdbId}`; // app deep link
+  const webUrl = `https://web.stremio.com/#/search?search=${imdbId}`;
+  // Provide both variants; client may choose first
+  return { streams: [
+    { name: 'AI Similar', title: 'AI Similar (App Search)', externalUrl: appUrl, behaviorHints: { notWebReady: true } },
+    { name: 'AI Similar', title: 'AI Similar (Web Search)', externalUrl: webUrl, behaviorHints: { notWebReady: true } }
+  ] };
 });
 
 const addonInterface = builder.getInterface();
 const port = process.env.PORT || 7000;
 serveHTTP(addonInterface, { port, static: 'web' });
-console.log(`AI Similar Add-on + UI running on :${port}`);
+console.log(`AI Similar Add-on (search deep-link mode) running on :${port}`);
