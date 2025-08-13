@@ -34,7 +34,7 @@ const builder = new addonBuilder(manifest);
 // Rate limiting to prevent 429 errors
 const rateLimiter = new Map();
 const RATE_LIMIT_WINDOW = 60000; // 1 minute
-const MAX_REQUESTS_PER_WINDOW = 10;
+const MAX_REQUESTS_PER_WINDOW = 15; // Increased from 10 to 15
 
 function checkRateLimit(key) {
   const now = Date.now();
