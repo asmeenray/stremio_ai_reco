@@ -149,17 +149,17 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
   return { metas: [] };
 });
 
-// Replace existing stream handler with inert navigation stream
+// Replace existing stream handler with redirect helper page so it does not try to play media
 builder.defineStreamHandler(async ({ type, id }) => {
   let titleName = id;
   try { const meta = await fetchMeta(type, id); titleName = meta?.name || id; } catch {}
-  const catalogUrl = `/catalog/${type}/ai-similar.json?imdbId=${id}`;
+  const redirectUrl = `/web/redirect.html?type=${type}&id=${id}`;
   return { streams: [{
     name: 'AI Similar',
     title: `AI Similar for ${titleName}`,
-    description: 'Opens the AI Similar catalog (Discover view).',
-    url: catalogUrl,
-    behaviorHints: { notWebReady: true }
+    description: 'Show AI Similar recommendations (opens Discover).',
+    url: redirectUrl,
+    behaviorHints: { notWebReady: false }
   }] };
 });
 
