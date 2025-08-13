@@ -68,8 +68,11 @@ builder.defineMetaHandler(async ({ type, id, extra, config }) => {
       similarMetas = await computeSimilar(baseMeta, type, cfg);
       cache.set(key, similarMetas, cfg.ttl);
     }
+    // Add two links: deep link (may not show on all clients) and a web fallback
+    const webLink = `/web/?type=${type}&imdbId=${id}`; // relative so Stremio loads it in webview
     const links = [
-      { name: 'AI Similar', category: 'recommendation', url: `stremio://discover/${type}/ai-similar/imdbId=${id}` }
+      { name: 'AI Similar (Discover)', category: 'recommendation', url: `stremio://discover/${type}/ai-similar/imdbId=${id}` },
+      { name: 'AI Similar (Web)', category: 'recommendation', url: webLink }
     ];
     return { meta: { ...baseMeta, aiSimilar: similarMetas || [], links } };
   } catch (e) {
