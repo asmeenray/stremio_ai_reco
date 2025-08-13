@@ -44,13 +44,26 @@ function normalizeRuntimeConfig(extra = {}, cfg = {}) {
 }
 
 async function computeSimilar(baseMeta, type, cfg){
-  if (!cfg.geminiKey || !baseMeta) return [];
+  if (!cfg.geminiKey || !baseMeta) {
+    console.log('computeSimilar: Missing geminiKey or baseMeta', { hasKey: !!cfg.geminiKey, hasMeta: !!baseMeta });
+    return [];
+  }
+  console.log('computeSimilar: Starting for', baseMeta.name, type);
   const prompt = buildPrompt(baseMeta);
   let raw;
-  try { raw = await getSimilarTitlesRaw(prompt, cfg.geminiKey); }
-  catch (e) { if (/Gemini API error 5/.test(e.message)) return []; throw e; }
+  try { 
+    raw = await getSimilarTitlesRaw(prompt, cfg.geminiKey); 
+    console.log('computeSimilar: Got raw response', raw?.length || 0, 'chars');
+  }
+  catch (e) { 
+    console.error('computeSimilar: Gemini error', e.message);
+    if (/Gemini API error 5/.test(e.message)) return []; 
+    throw e; 
+  }
   const parsed = parseSimilarJSON(raw).slice(0, cfg.max);
-  return mapSimilarToMetas(parsed, type);
+  const mapped = await mapSimilarToMetas(parsed, type);
+  console.log('computeSimilar: Final result', mapped.length, 'items');
+  return mapped;
 }
 
 // Meta handler simple
@@ -94,27 +107,13 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
   const key = cacheKey(type, imdbId) + `:${cfg.max}`;
   let similarMetas = cache.get(key);
   if (!similarMetas) {
-    // Time budget to avoid long blocking (so the row appears quickly)
     try {
       const baseMeta = await fetchMeta(type, imdbId);
-      const TIME_BUDGET_MS = 1500;
-      const computePromise = computeSimilar(baseMeta, type, cfg);
-      const raced = await Promise.race([
-        computePromise,
-        new Promise(res => setTimeout(() => res('__TIMEOUT__'), TIME_BUDGET_MS))
-      ]);
-      if (raced === '__TIMEOUT__') {
-        // Background fill
-        computePromise.then(res => {
-          cache.set(key, res, res.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
-        }).catch(()=>{});
-        return { metas: [ { id: 'ai:loading', type, name: 'Generating AI Similar…', poster: manifest.logo, description: 'Please wait a moment and re-open. (Background generation in progress)' } ] };
-      } else {
-        similarMetas = raced;
-        cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
-      }
+      similarMetas = await computeSimilar(baseMeta, type, cfg);
+      cache.set(key, similarMetas, similarMetas.length ? cfg.ttl : Math.min(300, Math.max(30, Math.round(cfg.ttl * 0.05))));
     } catch (e) {
-      console.error('Catalog handler error', e); similarMetas = [];
+      console.error('Catalog handler error', e); 
+      similarMetas = [];
     }
   }
   if (!similarMetas) return { metas: [] };
