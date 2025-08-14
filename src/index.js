@@ -94,7 +94,7 @@ async function computeSimilar(baseMeta, type, cfg){
     throw e; 
   }
   const parsed = parseSimilarJSON(raw).slice(0, cfg.max);
-  const mapped = await mapSimilarToMetas(parsed, type);
+  const mapped = await mapSimilarToMetas(parsed, type, baseMeta.name);
   console.log('computeSimilar: Final result', mapped.length, 'items');
   return mapped;
 }
@@ -164,13 +164,11 @@ builder.defineCatalogHandler(async ({ type, id, extra, config }) => {
     }
   }
   if (!similarMetas) return { metas: [] };
-  const metasWithReason = (similarMetas || []).map(m => ({
+  const metasWithType = (similarMetas || []).map(m => ({
     ...m,
-    type: m.type || type,
-    description: (m.description ? m.description + '\n\n' : '') + 
-                 (m.reason ? `AI Reason: ${m.reason}` : '')
+    type: m.type || type
   }));
-  return { metas: metasWithReason };
+  return { metas: metasWithType };
 });
 
 // Stream handler deep-link to search

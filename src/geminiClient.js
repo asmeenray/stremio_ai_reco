@@ -1,17 +1,17 @@
 import { fetch } from 'undici';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const MODEL = 'gemini-1.5-flash';
+const MODEL = 'gemini-1.5-flash-8b'; // Faster 8B model
 
 export async function getSimilarTitlesRaw(prompt, apiKey, { retries = 2, baseDelay = 300 } = {}) {
   const url = `${GEMINI_API_URL}/${MODEL}:generateContent?key=${apiKey}`;
   const body = {
     contents: [ { role: 'user', parts: [{ text: prompt }] } ],
     generationConfig: {
-      temperature: 0.4,
-      topK: 20,
-      topP: 0.8,
-      maxOutputTokens: 1200, // Increased for 20 results
+      temperature: 0.3, // Lower for more focused responses
+      topK: 15, // Reduced for faster generation
+      topP: 0.7, // More deterministic
+      maxOutputTokens: 400, // Reduced since no reasons needed
       responseMimeType: 'application/json'
     }
   };
@@ -24,7 +24,7 @@ export async function getSimilarTitlesRaw(prompt, apiKey, { retries = 2, baseDel
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(20000) // 20 second timeout for 20 results
+        signal: AbortSignal.timeout(15000) // Reduced timeout
       });
       if (!res.ok) {
         const status = res.status;
@@ -56,20 +56,23 @@ export async function getSimilarTitlesRaw(prompt, apiKey, { retries = 2, baseDel
 }
 
 export function buildPrompt(baseMeta) {
-  const { name, year, genres = [], description = '', director = [], cast = [] } = baseMeta || {};
-  const genreText = genres.length ? genres.slice(0, 3).join(', ') : 'Unknown';
-  const plotText = description.slice(0, 250);
-  const directorText = Array.isArray(director) ? director.slice(0, 2).join(', ') : director || '';
-  const castText = Array.isArray(cast) ? cast.slice(0, 3).map(c => c.name || c).join(', ') : '';
+  const { name, year, genres = [], description = '' } = baseMeta || {};
+  const genreText = genres.length ? genres.slice(0, 2).join(', ') : 'Unknown';
+  const plotText = description.slice(0, 150); // Shorter for speed
   
-  return `Find 20 similar ${baseMeta.type || 'titles'} to: ${name} (${year || '?'})\n` +
-    `Genres: ${genreText}\n` +
-    `${directorText ? `Director: ${directorText}\n` : ''}` +
-    `${plotText ? `Plot: ${plotText}\n` : ''}` +
-    `${castText ? `Cast: ${castText}\n` : ''}` +
-    `JSON: {"similar":[{"title":"Movie Name","year":2020,"reason":"Brief reason"}]}\n` +
-    `Priority: 1) Same franchise/series movies FIRST 2) Same director/genre 3) Similar themes/tone 4) Popular acclaimed titles\n` +
-    `Keep reasons under 6 words. Include sequels, prequels, and franchise movies at the top.`;
+  if (baseMeta.type === 'series') {
+    return `List 20 similar TV series to: ${name} (${year || '?'})\n` +
+           `Genre: ${genreText}\n` +
+           `${plotText ? `Plot: ${plotText}\n` : ''}` +
+           `JSON: {"similar":[{"title":"Series Name","year":2020}]}\n` +
+           `ONLY TV series. NO seasons of "${name}".`;
+  } else {
+    return `List 20 similar movies to: ${name} (${year || '?'})\n` +
+           `Genre: ${genreText}\n` +
+           `${plotText ? `Plot: ${plotText}\n` : ''}` +
+           `JSON: {"similar":[{"title":"Movie Name","year":2020}]}\n` +
+           `Franchise sequels first, then similar movies. ONLY movies.`;
+  }
 }
 
 export function parseSimilarJSON(text) {

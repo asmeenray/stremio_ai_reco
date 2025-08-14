@@ -49,10 +49,28 @@ export async function searchTitle(query, type) {
   return data.metas || [];
 }
 
-export async function mapSimilarToMetas(similar, type) {
+export async function mapSimilarToMetas(similar, type, originalTitle = '') {
   const results = [];
   const tmdbKey = process.env.TMDB_API_KEY; // optional
+  
+  // Function to check if it's the same series (for filtering out seasons)
+  const isSameSeries = (title, originalTitle) => {
+    if (!originalTitle || type !== 'series') return false;
+    const cleanOriginal = originalTitle.toLowerCase().replace(/\s+(season|series|s\d+)\s*\d*$/i, '').trim();
+    const cleanTitle = title.toLowerCase().replace(/\s+(season|series|s\d+)\s*\d*$/i, '').trim();
+    
+    // Check if titles are very similar (same base series)
+    return cleanTitle.includes(cleanOriginal) || cleanOriginal.includes(cleanTitle) ||
+           title.toLowerCase().includes(cleanOriginal) || originalTitle.toLowerCase().includes(cleanTitle.split(' ')[0]);
+  };
+  
   for (const item of similar) {
+    // Skip if it's the same series (for series type)
+    if (isSameSeries(item.title, originalTitle)) {
+      console.log(`Skipping same series: ${item.title} (original: ${originalTitle})`);
+      continue;
+    }
+    
     const q = `${item.title} ${item.year || ''}`.trim();
     try {
       let matches = await searchTitle(q, type);
@@ -62,16 +80,29 @@ export async function mapSimilarToMetas(similar, type) {
       }
       if (matches.length) {
         const match = matches[0];
-        results.push({ 
-          ...match, 
-          year: match.year || item.year, // Preserve AI year if search result doesn't have one
-          reason: item.reason 
-        });
+        // Ensure the result matches the requested type
+        if (match.type === type || !match.type) {
+          results.push({ 
+            ...match, 
+            year: match.year || item.year,
+            type: type // Ensure correct type
+          });
+        }
       } else {
-        results.push({ id: `ai:${q}`, name: item.title, year: item.year, type, reason: item.reason });
+        results.push({ 
+          id: `ai:${q}`, 
+          name: item.title, 
+          year: item.year, 
+          type
+        });
       }
     } catch {
-      results.push({ id: `ai:${q}`, name: item.title, year: item.year, type, reason: item.reason });
+      results.push({ 
+        id: `ai:${q}`, 
+        name: item.title, 
+        year: item.year, 
+        type
+      });
     }
   }
   return results;
